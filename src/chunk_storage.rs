@@ -20,14 +20,17 @@ impl ChunkStorage {
             for z in 0..CHUNK_XZ {
                 for y in 0..CHUNK_Y {
                     chunks[z + x * CHUNK_XZ + y * CHUNK_XZ * CHUNK_XZ] =
-                        // chunk::Chunk::noise(x as i32, y as i32, z as i32);
-                        chunk::Chunk::empty();
-                    for cx in 0..CHUNK_SIZE {
-                        for cz in 0..CHUNK_SIZE {
-                            chunks[z + x * CHUNK_XZ + y * CHUNK_XZ * CHUNK_XZ].blocks[cx][cz] = 1;
-                        }
-                    }
-                    chunks[z + x * CHUNK_XZ + y * CHUNK_XZ * CHUNK_XZ].blocks[0][0] = u32::MAX;
+                        chunk::Chunk::noise(x as i32, y as i32, z as i32);
+                    //     chunk::Chunk::empty();
+                    // if y == 0 {
+                    //     for cx in 0..CHUNK_SIZE {
+                    //         for cz in 0..CHUNK_SIZE {
+                    //             chunks[z + x * CHUNK_XZ + y * CHUNK_XZ * CHUNK_XZ].blocks[cx][cz] =
+                    //                 1;
+                    //         }
+                    //     }
+                    //     chunks[z + x * CHUNK_XZ + y * CHUNK_XZ * CHUNK_XZ].blocks[0][0] = u32::MAX;
+                    // }
                 }
             }
         }

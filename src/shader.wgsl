@@ -23,6 +23,7 @@ struct GlobalsUniform {
     light_mat: mat4x4<f32>,
     cam_pos: vec3<f32>,
     cam_dir: vec3<f32>,
+    light_pos: vec3<f32>,
     light_dir: vec3<f32>,
     grid_lines: u32,
 }
@@ -34,7 +35,10 @@ var<uniform> globals: GlobalsUniform;
 var blocks: texture_3d<u32>;
 
 @group(1) @binding(0)
-var shadow_map: texture_2d<f32>;
+var shadow_map: texture_depth_2d;
+
+@group(1) @binding(1)
+var shadow_sampler: sampler_comparison;
 
 struct VertexInput {
     @location(0) pos: vec3<f32>,
@@ -44,7 +48,7 @@ struct VertexInput {
 struct VertexOutput {
     @builtin(position) pos: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
-    @location(1) light_pos: vec3<f32>,
+    @location(1) light_pos: vec4<f32>,
     @location(2) axis: u32,
 }
 
@@ -55,7 +59,7 @@ fn vx_main(in: VertexInput) -> VertexOutput {
     out.world_pos = in.pos;
 
     let light_pos = globals.light_mat * vec4<f32>(in.pos, 1.0);
-    out.light_pos = light_pos.xyz / light_pos.w;
+    out.light_pos = light_pos;
     out.axis = in.axis;
     return out;
 }
@@ -64,7 +68,7 @@ fn vx_main(in: VertexInput) -> VertexOutput {
 fn vx_shadow(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     let light_pos = globals.light_mat * vec4<f32>(in.pos, 1.0);
-    out.pos = light_pos / light_pos.w;
+    out.pos = light_pos;
     out.world_pos = in.pos;
     out.axis = in.axis;
     return out;
@@ -109,7 +113,7 @@ fn get_block(coord: vec3<f32>, axis: u32, face: bool) -> bool {
 
 struct FragmentInput {
     @location(0) world_pos: vec3<f32>,
-    @location(1) light_pos: vec3<f32>,
+    @location(1) light_pos: vec4<f32>,
     @location(2) axis: u32,
 }
 
@@ -133,7 +137,7 @@ fn block_color(coord: vec3<f32>, axis: u32, face: bool) -> vec4<f32> {
 
     let exposed = !get_block(coord - normal, axis, face);
     if !exposed {
-        return vec4<f32>(0.0);;
+        return vec4<f32>(0.0);
     }
 
     let dot = dot(globals.light_dir, normal) + 0.3;
@@ -147,28 +151,42 @@ fn grid_dist(v: f32, size: f32) -> f32 {
 
 fn chunk_grid(coord: vec3<f32>, axis: u32, face: bool) -> bool {
     let thickness = 2.0;
-    let grid_size = 32.0;
 
-    let dx4 = grid_dist(coord.x, 4.0);
-    let dy4 = grid_dist(coord.y, 4.0);
-    let dz4 = grid_dist(coord.z, 4.0);
-    let dx32 = grid_dist(coord.x, 32.0);
-    let dz32 = grid_dist(coord.z, 32.0);
-    let dist_l1 = length(vec2<f32>(dx4, dz32));
-    let dist_l2 = length(vec2<f32>(dx32, dz4));
-    let dist_l3 = length(vec2<f32>(dy4, dx32));
-    let dist_l4 = length(vec2<f32>(dy4, dz32));
+    let dist = max(
+        grid_dist(coord.x, f32(CHUNK_SIZE)),
+        max(
+            grid_dist(coord.y, f32(CHUNK_SIZE)),
+            grid_dist(coord.z, f32(CHUNK_SIZE)),
+        ),
+    );
 
     let w = fwidth(coord.y);
+    let l = smoothstep(0.0, w * thickness, dist);
 
-    let l1 = step(dist_l1, w * thickness);
-    let l2 = step(dist_l2, w * thickness);
-    let l3 = step(dist_l3, w * thickness);
-    let l4 = step(dist_l4, w * thickness);
+    return l < 0.9;
 
-    let line = max(l1, max(l2, max(l3, l4)));
+    //  let grid_size = 32.0;
 
-    return line == 1.0;
+    //  let dx4 = grid_dist(coord.x, 4.0);
+    //  let dy4 = grid_dist(coord.y, 4.0);
+    //  let dz4 = grid_dist(coord.z, 4.0);
+    //  let dx32 = grid_dist(coord.x, 32.0);
+    //  let dz32 = grid_dist(coord.z, 32.0);
+    //  let dist_l1 = length(vec2<f32>(dx4, dz32));
+    //  let dist_l2 = length(vec2<f32>(dx32, dz4));
+    //  let dist_l3 = length(vec2<f32>(dy4, dx32));
+    //  let dist_l4 = length(vec2<f32>(dy4, dz32));
+
+    //  let w = fwidth(coord.y);
+
+    //  let l1 = step(dist_l1, w * thickness);
+    //  let l2 = step(dist_l2, w * thickness);
+    //  let l3 = step(dist_l3, w * thickness);
+    //  let l4 = step(dist_l4, w * thickness);
+
+    //  let line = max(l1, max(l2, max(l3, l4)));
+
+    //  return line == 1.0;
 }
 
 @fragment
@@ -191,28 +209,19 @@ fn fg_main(in: FragmentInput) -> @location(0) vec4<f32> {
     }
 
     let uv = vec2<f32>(
-        in.light_pos.x * 0.5 + 0.5,
-        -in.light_pos.y * 0.5 + 0.5,
+        (in.light_pos.x / in.light_pos.w) * 0.5 + 0.5,
+        -(in.light_pos.y / in.light_pos.w) * 0.5 + 0.5,
     );
-    let dim = vec2<f32>(textureDimensions(shadow_map));
-    let depth = in.light_pos.z;
+    let depth = in.light_pos.z / in.light_pos.w;
 
-    let texel_coords = vec2<u32>(
-        clamp(uv * dim, vec2<f32>(0.0), vec2<f32>(dim - vec2<f32>(1.0)))
-    );
-
-    let shadow_depth = textureLoad(
+    let shadow_depth = textureSampleCompare(
         shadow_map,
-        texel_coords,
-        0,
-    )[0];
-    //return vec4<f32>(depth, depth, depth, 1.0);
+        shadow_sampler,
+        uv,
+        depth,
+    );
 
-    if depth > shadow_depth + epsilon {
-        block_color.x *= 0.2;
-        block_color.y *= 0.2;
-        block_color.z *= 0.2;
-    }
+    block_color *= shadow_depth;
 
     return block_color;
 }
@@ -220,12 +229,30 @@ fn fg_main(in: FragmentInput) -> @location(0) vec4<f32> {
 @fragment
 fn fg_shadow(in: FragmentInput) {
     let face = select(FACE_FRONT, FACE_BACK,
-        (in.axis == AXIS_X && globals.light_dir.x < 0.0)
-        || (in.axis == AXIS_Y && globals.light_dir.y < 0.0)
-        || (in.axis == AXIS_Z && globals.light_dir.z < 0.0)
+        (in.axis == AXIS_X && in.world_pos.x < globals.light_pos.x)
+        || (in.axis == AXIS_Y && in.world_pos.y < globals.light_pos.y)
+        || (in.axis == AXIS_Z && in.world_pos.z < globals.light_pos.z)
     );
 
-    if !get_block(in.world_pos, in.axis, face) {
+    let block = get_block(in.world_pos, in.axis, face);
+    if !block {
+        discard;
+    }
+
+    var normal: vec3<f32>;
+    if in.axis == AXIS_X {
+        normal = vec3<f32>(1.0, 0.0, 0.0);
+    } else if in.axis == AXIS_Y {
+        normal = vec3<f32>(0.0, 1.0, 0.0);
+    } else {
+        normal = vec3<f32>(0.0, 0.0, 1.0);
+    }
+    if face == FACE_BACK {
+        normal *= -1.0;
+    }
+
+    let exposed = !get_block(in.world_pos - normal, in.axis, face);
+    if !exposed {
         discard;
     }
 }

@@ -1,6 +1,6 @@
 use std::{num::NonZero, sync::Arc, time};
 
-use cgmath::InnerSpace;
+use cgmath::{InnerSpace, Zero};
 use wgpu::{util::DeviceExt, TextureView};
 
 use crate::{
@@ -11,6 +11,8 @@ use crate::{
     lattice, shadow,
     vertex::Vertex,
 };
+
+const SHADOW_MAP_RES: u32 = 8 * 1024;
 
 pub struct State<'a> {
     instance: wgpu::Instance,
@@ -103,8 +105,8 @@ impl<'a> State<'a> {
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth32Float,
             size: wgpu::Extent3d {
-                width: 4096,
-                height: 4096,
+                width: SHADOW_MAP_RES,
+                height: SHADOW_MAP_RES,
                 depth_or_array_layers: 1,
             },
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
@@ -159,33 +161,62 @@ impl<'a> State<'a> {
         let shadow_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("shadow bind group layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        count: None,
                     },
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    count: None,
-                }],
+                    wgpu::BindGroupLayoutEntry {
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        count: None,
+                    },
+                ],
             });
 
         let shadow_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("shadow bind group"),
             layout: &shadow_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&shadow_map.create_view(
-                    &wgpu::TextureViewDescriptor {
-                        usage: Some(
-                            wgpu::TextureUsages::RENDER_ATTACHMENT
-                                | wgpu::TextureUsages::TEXTURE_BINDING,
-                        ),
-                        ..Default::default()
-                    },
-                )),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&shadow_map.create_view(
+                        &wgpu::TextureViewDescriptor {
+                            usage: Some(
+                                wgpu::TextureUsages::RENDER_ATTACHMENT
+                                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                            ),
+                            ..Default::default()
+                        },
+                    )),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&device.create_sampler(
+                        &wgpu::SamplerDescriptor {
+                            label: Some("shadow map sampler"),
+                            address_mode_u: wgpu::AddressMode::ClampToEdge,
+                            address_mode_v: wgpu::AddressMode::ClampToEdge,
+                            address_mode_w: wgpu::AddressMode::ClampToEdge,
+                            mag_filter: wgpu::FilterMode::Linear,
+                            min_filter: wgpu::FilterMode::Linear,
+                            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+                            lod_min_clamp: 0.0,
+                            lod_max_clamp: 0.0,
+                            compare: Some(wgpu::CompareFunction::Less),
+                            anisotropy_clamp: 1,
+                            border_color: None,
+                        },
+                    )),
+                },
+            ],
         });
 
         let shader_source =
@@ -312,7 +343,11 @@ impl<'a> State<'a> {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_compare: Some(wgpu::CompareFunction::Less),
                 depth_write_enabled: Some(true),
-                bias: Default::default(),
+                bias: wgpu::DepthBiasState {
+                    clamp: 0.0,
+                    constant: 1,
+                    slope_scale: 4.0,
+                },
                 stencil: Default::default(),
             }),
             layout: Some(
@@ -525,8 +560,8 @@ impl<'a> State<'a> {
         self.camera_controller
             .update_camera(&mut self.camera, elapsed);
 
-        self.light_dir.x = f32::sin((now - self.start).as_secs_f32());
-        // self.light_dir.z = f32::cos((now - self.start).as_secs_f32());
+        self.light_dir.x = f32::sin((now - self.start).as_secs_f32() * 0.2);
+        self.light_dir.z = f32::cos((now - self.start).as_secs_f32() * 0.3);
 
         self.queue.write_buffer(
             &self.background_buf,
@@ -543,16 +578,17 @@ impl<'a> State<'a> {
         let cam_mat = self.camera.proj_view_matrix();
         let dir = self.camera.direction();
         let pos = self.camera.position();
+        let light_pos = cgmath::Vector3::zero() - self.light_dir.normalize() * 128.0;
         let light = self.light_dir.normalize();
         let globals = GlobalsUniform {
             proj_view_mat: cam_mat.into(),
-            light_mat: shadow::directional(light).into(),
+            light_mat: shadow::directional(light_pos, light).into(),
             cam_dir: [dir.x, dir.y, dir.z],
             cam_pos: [pos.x, pos.y, pos.z],
+            light_pos: [light_pos.x, light_pos.y, light_pos.z],
             light_dir: [light.x, light.y, light.z],
             grid_lines: self.grid_lines as u32,
-            _pad0: 0,
-            _pad1: 0,
+            ..Default::default()
         };
         self.queue
             .write_buffer(&self.globals_buf, 0, bytemuck::cast_slice(&[globals]));

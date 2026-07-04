@@ -162,7 +162,7 @@ impl CameraController {
 
         assert!(self.min_fovy.0 > 0.0);
         assert!(self.max_fovy.0 < std::f32::consts::PI);
-        cam.fovy = Rad((cam.fovy.0 + self.scroll * 0.001).clamp(self.min_fovy.0, self.max_fovy.0));
+        cam.fovy = Rad((cam.fovy.0 + self.scroll * -0.01).clamp(self.min_fovy.0, self.max_fovy.0));
         self.scroll = 0.0;
 
         cam.yaw += Rad(self.mouse_dx * self.sensitivity);

@@ -3,9 +3,9 @@ use crate::{
     lattice,
 };
 
-pub fn directional(dir: cgmath::Vector3<f32>) -> cgmath::Matrix4<f32> {
+pub fn directional(pos: cgmath::Vector3<f32>, dir: cgmath::Vector3<f32>) -> cgmath::Matrix4<f32> {
     use cgmath::*;
-    let view_mat = Matrix4::look_to_rh(Point3::origin() - dir * 128.0, dir, Vector3::unit_y());
+    let view_mat = Matrix4::look_to_rh(Point3::from_vec(pos), dir, Vector3::unit_y());
 
     let mut min_x = f32::INFINITY;
     let mut max_x = f32::NEG_INFINITY;
